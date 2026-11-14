@@ -1,6 +1,6 @@
 # Lab 001 — Pod Running but Not Ready
 
-**Status: Ready to execute; no real terminal evidence recorded yet.**
+**Status: Readiness failure reproduced, diagnosed, and recovery verified on local kind. Cleanup pending.**
 
 ## Goal
 
@@ -130,7 +130,7 @@ Only delete the namespace created for this lab.
 
 ## Verified local evidence — 2026-11-14
 
-The following observations were supplied from the local `kind-prod-sim` cluster; this lab has **not yet been recovered or cleaned up**.
+The following observations were supplied from the local `kind-prod-sim` cluster; recovery has now been verified; namespace cleanup is pending.
 
 ```text
 $ kubectl get pods -n readiness-lab
@@ -155,8 +155,20 @@ Events:
   Warning Unhealthy (x15) Readiness probe failed: HTTP probe failed with statuscode: 404
 ```
 
-**Evidence interpretation:** The container starts, but the readiness probe receives HTTP 404. The application endpoint and configured probe path need to be compared before a root cause is formally confirmed. Recovery verification remains pending.
+**Evidence interpretation:** The container starts, but the readiness probe receives HTTP 404. The application endpoint and configured probe path need to be compared before a root cause is formally confirmed. Recovery verified; namespace cleanup pending.
 
 ### Endpoint verification (user-observed)
 
-`kubectl exec -n readiness-lab readiness-demo -- wget -S -O /dev/null http://127.0.0.1:80/` returned **HTTP/1.1 200 OK**, server `nginx/1.31.8`. This supports the readiness-path mismatch diagnosis: the server responds at `/`, while the readiness probe against `/health/ready` returned 404. Fix and post-fix verification remain pending.
+`kubectl exec -n readiness-lab readiness-demo -- wget -S -O /dev/null http://127.0.0.1:80/` returned **HTTP/1.1 200 OK**, server `nginx/1.31.8`. This supports the readiness-path mismatch diagnosis: the server responds at `/`, while the readiness probe against `/health/ready` returned 404. Fix and post-fix verification are recorded below; namespace cleanup remains pending.
+
+### Recovery verified — 2026-11-14
+
+The lab Pod was recreated with readiness path `/`. The user supplied this actual verification:
+
+```text
+$ kubectl get pod readiness-demo -n readiness-lab
+NAME             READY   STATUS    RESTARTS   AGE
+readiness-demo   1/1     Running   0          12s
+```
+
+**Outcome:** The replacement Pod is Running and Ready with no restarts. The original failing probe returned 404 at `/health/ready`, whereas NGINX responded 200 at `/`. No Service/EndpointSlice behavior was tested in this standalone-Pod exercise. Namespace cleanup still needs confirmation.
