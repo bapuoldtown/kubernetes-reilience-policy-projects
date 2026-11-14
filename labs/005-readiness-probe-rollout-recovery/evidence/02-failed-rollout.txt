@@ -1,0 +1,13 @@
+Observed user output, 2026-11-14
+
+NAME                          READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/payment-api   2/2     1            2           11m
+
+NAME                                    DESIRED   CURRENT   READY   AGE
+replicaset.apps/payment-api-65c8ddcd8   1         1         0       114s
+replicaset.apps/payment-api-94b9b79b6   2         2         2       11m
+
+NAME                              READY   STATUS    RESTARTS   AGE
+pod/payment-api-65c8ddcd8-gxnw9   0/1     Running   0          114s
+pod/payment-api-94b9b79b6-jm6mg   1/1     Running   0          11m
+pod/payment-api-94b9b79b6-t9mr7   1/1     Running   0          11m
