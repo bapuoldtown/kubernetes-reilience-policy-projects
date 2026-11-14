@@ -156,3 +156,7 @@ Events:
 ```
 
 **Evidence interpretation:** The container starts, but the readiness probe receives HTTP 404. The application endpoint and configured probe path need to be compared before a root cause is formally confirmed. Recovery verification remains pending.
+
+### Endpoint verification (user-observed)
+
+`kubectl exec -n readiness-lab readiness-demo -- wget -S -O /dev/null http://127.0.0.1:80/` returned **HTTP/1.1 200 OK**, server `nginx/1.31.8`. This supports the readiness-path mismatch diagnosis: the server responds at `/`, while the readiness probe against `/health/ready` returned 404. Fix and post-fix verification remain pending.
