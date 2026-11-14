@@ -1,0 +1,29 @@
+Observed user output: kubectl describe pod payment-api-65c8ddcd8-gxnw9 -n mission-005
+
+Name:             payment-api-65c8ddcd8-gxnw9
+Namespace:        mission-005
+Node:             prod-sim-worker2/172.18.0.3
+Status:           Running
+IP:               10.244.2.109
+Controlled By:    ReplicaSet/payment-api-65c8ddcd8
+Containers:
+  nginx:
+    Image:          nginx:alpine
+    State:          Running
+    Ready:          False
+    Restart Count:  0
+    Readiness:      http-get http://:80/health/ready delay=3s timeout=1s period=5s #success=1 #failure=3
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True
+  Initialized                 True
+  Ready                       False
+  ContainersReady             False
+  PodScheduled                True
+Events:
+  Normal   Scheduled  Successfully assigned mission-005/payment-api-65c8ddcd8-gxnw9 to prod-sim-worker2
+  Normal   Pulled     Container image "nginx:alpine" already present on machine and can be accessed by the pod
+  Normal   Created    Container created
+  Normal   Started    Container started
+  Warning  Unhealthy  2m32s (x25 over 4m32s) kubelet
+           Readiness probe failed: HTTP probe failed with statuscode: 404
