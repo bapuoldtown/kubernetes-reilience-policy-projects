@@ -1,0 +1,21 @@
+{
+  "spec": {
+    "template": {
+      "spec": {
+        "containers": [
+          {
+            "name": "nginx",
+            "readinessProbe": {
+              "httpGet": {
+                "path": "/health/ready",
+                "port": 80
+              },
+              "initialDelaySeconds": 3,
+              "periodSeconds": 5
+            }
+          }
+        ]
+      }
+    }
+  }
+}
