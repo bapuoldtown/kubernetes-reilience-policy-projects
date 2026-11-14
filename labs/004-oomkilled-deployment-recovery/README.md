@@ -98,6 +98,41 @@ pod/oom-api-5b58f445df-tz2fz   1/1   Running   0
 
 `kubectl rollout history deployment/oom-api -n oom-lab` showed revisions 1 and 2, both with no change-cause annotation.
 
+## Deployment change impact — when is a new ReplicaSet created?
+
+**Rule:** For a Deployment, changing `spec.template` (the Pod template) triggers a rollout and normally creates a new ReplicaSet. Changing fields outside `spec.template` does not. An identical or previously retained template may reuse an existing ReplicaSet rather than create another distinct one.
+
+| Action on Deployment | New ReplicaSet? | Effect / what operators should expect |
+| --- | --- | --- |
+| Create a new Deployment | Yes (initial RS) | Controller creates the first ReplicaSet and desired Pods |
+| Change container image tag or digest in `spec.template` | Yes | Rolling update replaces Pods with the new image reference |
+| Push new image to registry under the **same tag**, without changing Deployment | **No** | No Pod-template change; existing Pods keep running their existing image; future pulls can vary if tag is mutable |
+| Change memory/CPU requests or limits in `spec.template` | Yes | New Pods use updated resources; this was our OOM lab recovery |
+| Change environment variables or referenced ConfigMap/Secret **name** in template | Yes | Pod template changes; replacement Pods are created |
+| Change a ConfigMap/Secret **data value** without changing Deployment template | **No** | Mounted ConfigMap/Secret volumes may update eventually; environment variables do not update in running containers; no automatic Deployment rollout |
+| Change readiness/liveness/startup probe definition | Yes | New Pods use updated probe settings |
+| Change container command, args, ports, volumes or mounts in template | Yes | New Pod template triggers rollout |
+| Add/change a label or annotation under `spec.template.metadata` | Yes | Pod-template metadata changes; e.g. `kubectl rollout restart` adds/updates a restart annotation |
+| Change only Deployment metadata labels/annotations (`metadata`, not `spec.template.metadata`) | No | Deployment metadata changes, Pod template remains identical |
+| Scale `spec.replicas` from 2 to 5 | No | Existing ReplicaSet scales to the desired count |
+| Change Deployment rollout strategy (`spec.strategy`) | No | Alters rollout policy, not Pod template |
+| Change `revisionHistoryLimit` or `progressDeadlineSeconds` | No | Alters history retention or progress tracking, not Pod template |
+| Delete a Pod managed by a ReplicaSet | No | ReplicaSet creates a replacement Pod using its current template |
+| `kubectl rollout undo` to a retained previous template | Rollout yes; **not necessarily a distinct new RS** | Deployment reuses an existing matching ReplicaSet when retained, and advances the rollout revision |
+| Apply the exact same Deployment manifest again | No | No Pod-template change, so no new rollout |
+
+### How to inspect the impact before and after a change
+
+```powershell
+kubectl diff -f deployment.yaml
+kubectl get deployment oom-api -n oom-lab -o yaml
+kubectl get rs -n oom-lab
+kubectl rollout history deployment/oom-api -n oom-lab
+kubectl rollout status deployment/oom-api -n oom-lab
+```
+
+Use `kubectl diff` against the intended manifest before applying, then verify actual ReplicaSets and rollout health after synchronization. In GitOps, review the manifest diff in the PR, merge, let Argo CD sync, and verify the live workload. A new ReplicaSet does **not** by itself prove a successful or zero-downtime rollout.
+
 ## Production lessons
 - Container OOMKilled (exit code 137 here) can trigger kubelet restarts and backoff; the Pod object may remain.
 - Updating the Deployment Pod template creates a new ReplicaSet for a controlled rollout; deleting individual Pods would not fix the bad template.
