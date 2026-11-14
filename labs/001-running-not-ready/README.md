@@ -127,3 +127,32 @@ kubectl delete namespace readiness-lab
 ```
 
 Only delete the namespace created for this lab.
+
+## Verified local evidence — 2026-11-14
+
+The following observations were supplied from the local `kind-prod-sim` cluster; this lab has **not yet been recovered or cleaned up**.
+
+```text
+$ kubectl get pods -n readiness-lab
+NAME             READY   STATUS    RESTARTS   AGE
+readiness-demo   0/1     Running   0          22s
+
+$ kubectl describe pod readiness-demo -n readiness-lab
+Node: prod-sim-worker3
+Status: Running
+Container: web
+  State: Running
+  Ready: False
+  Restart Count: 0
+  Readiness: http-get http://:80/health/ready
+Conditions:
+  Ready: False
+  ContainersReady: False
+Events:
+  Normal Scheduled Successfully assigned to prod-sim-worker3
+  Normal Pulled Successfully pulled image nginx:alpine
+  Normal Started Container started
+  Warning Unhealthy (x15) Readiness probe failed: HTTP probe failed with statuscode: 404
+```
+
+**Evidence interpretation:** The container starts, but the readiness probe receives HTTP 404. The application endpoint and configured probe path need to be compared before a root cause is formally confirmed. Recovery verification remains pending.
