@@ -134,3 +134,103 @@ kubectl delete namespace mtls-lab --ignore-not-found
 ```
 
 **Do not claim SPIRE-backed mTLS succeeded until both positive and negative peer-identity tests pass.**
+
+
+## 7. Step-by-step mental model: initial attestation, mTLS and renewal
+
+### 7.1 Where each component lives
+
+```mermaid
+flowchart LR
+  subgraph N1["Worker node 1"]
+    subgraph PP["Payment Pod — SA: payment"]
+      PA["FastAPI Payment"]
+      PE["Envoy sidecar"]
+      PA --> PE
+    end
+    A1["SPIRE Agent (DaemonSet)"]
+    PE <-->|"Workload API / SDS integration"| A1
+  end
+  subgraph N2["Worker node 2"]
+    subgraph LP["Ledger Pod — SA: ledger"]
+      LE["Envoy sidecar"]
+      LA["FastAPI Ledger"]
+      LE --> LA
+    end
+    A2["SPIRE Agent (DaemonSet)"]
+    LE <-->|"Workload API / SDS integration"| A2
+  end
+  SS["SPIRE Server"]
+  SS --> A1
+  SS --> A2
+  PE <-->|"mTLS via Kubernetes Services"| LE
+```
+
+- **ServiceAccount:** declared in each Deployment's Pod template (`serviceAccountName`). Kubernetes normally assigns the namespace's `default` ServiceAccount when unspecified; dedicated per-workload ServiceAccounts are recommended.
+- **SPIRE Agent:** installed by platform engineering as a **node-level DaemonSet**, not an application sidecar. Each Envoy talks to its local Agent through a securely mounted Unix socket and a compatible SPIFFE/SDS integration.
+- **Envoy:** a sidecar in each Pod, configured to use SPIRE-provided X.509-SVIDs for mTLS and validate/authorize the peer's SPIFFE URI SAN. Transparent traffic capture or explicit proxy routing must be configured; merely running Envoy does not intercept traffic.
+- **SPIRE Server:** holds registration information, trust material and issuance services. It is **not** in the HTTP request path.
+- **Same or different namespaces:** both work. Identity can include namespace and ServiceAccount; cross-namespace access is controlled by explicit policy, not automatically denied by SPIFFE.
+
+### 7.2 Timeline: NOT one attestation per HTTP request
+
+```mermaid
+sequenceDiagram
+    participant P as Payment FastAPI
+    participant E as Payment Envoy
+    participant A as Local SPIRE Agent
+    participant S as SPIRE Server
+    participant L as Ledger Envoy
+    Note over E,A: Startup: identity acquisition
+    E->>A: Establish Workload API / SDS identity subscription
+    A->>A: Attest requesting process using Kubernetes selectors
+    A-->>E: Current X.509-SVID + trust bundle
+    Note over A,S: Agent obtains and renews issued SVIDs with SPIRE infrastructure
+    Note over P,L: 10 minutes later: application request
+    P->>E: POST /ledger
+    E->>L: New mTLS connection using cached valid SVID
+    L-->>E: Authenticate peer; authorize Payment SPIFFE ID
+    E-->>P: Response
+    Note over E,A: Before certificate expiry: renewal
+    A-->>E: Updated X.509-SVID via ongoing subscription
+    Note over P,L: 35 minutes later: another request
+    P->>E: POST /ledger
+    E->>L: Use current identity; handshake only if new TLS connection
+    L-->>E: Response
+```
+
+**The certificate TTL is not an attestation timer.** Workload attestation happens when the Agent identifies a client connecting to its Workload API; reconnecting may trigger it again. Identity renewal can occur over an existing subscription without a new workload attestation each time. A 30-minute SVID lifetime does **not** mean Envoy must re-attest every 30 minutes. A new TLS connection does perform a TLS handshake; existing HTTP keep-alive connections may be reused. Actual certificate refresh timing is implementation/configuration-dependent.
+
+### 7.3 Two independent authentication domains
+
+```mermaid
+flowchart LR
+  HUMAN["Bank employee"] -->|"SSO / MFA; OAuth2/OIDC access token"| GW["Ingress / API gateway"]
+  GW --> PAY["Payment FastAPI"]
+  PAY -->|"via Envoy; SPIFFE mTLS"| LED["Ledger FastAPI"]
+  KSA["Kubernetes ServiceAccount"] -. "Pod Kubernetes identity / RBAC and attestation attribute" .-> PAY
+```
+
+A human opening Swagger UI is authenticated and authorized with corporate identity and API permissions, **not** the Pod's Kubernetes ServiceAccount. SPIFFE mTLS authenticates **workloads**, not automatically the end-user's business authorization. In banking, restrict Swagger access and separately enforce API authorization.
+
+### 7.4 Production ownership, rotation and alerting
+
+| Owner | Responsibility |
+|---|---|
+| Platform/SRE | Operate SPIRE Server, Agent DaemonSet, CSI/SDS integrations, trust domain, identity registrations and availability |
+| Application team | Dedicated ServiceAccount, approved identity mapping, Envoy integration via platform templates, allowed callers, downstream error monitoring |
+| Security | Review trust and peer-authorization policies, audit identity anomalies |
+
+**Rotation:** SPIRE and the configured client/proxy integration distribute renewed short-lived SVIDs before expiry. The app team should not manually distribute private keys or implement a custom cron job for certificate replacement.
+
+**Alert on outcomes, not only healthy Pods:**
+1. SPIRE Server/Agent health and registration/attestation errors.
+2. Failed or stale X.509-SVID renewal and **remaining lifetime of the active certificate** (may need a custom exporter).
+3. Envoy SDS delivery/rejection errors, TLS handshake failures, unauthorized peer IDs and downstream connection failures.
+4. Distinguish normal renewal from an outage: a temporary Server failure does not immediately invalidate unexpired cached SVIDs, but expiry can break **new** handshakes.
+
+### 7.5 Interview answer (short)
+
+> Each FastAPI Deployment uses a dedicated Kubernetes ServiceAccount. Platform engineering runs SPIRE Server and node-local SPIRE Agents. Our Envoy sidecars subscribe to the SPIFFE workload identity material through the Agent integration. The Agent attests the calling workload and matches registered selectors; SPIRE issues short-lived X.509-SVIDs. Envoy uses the current SVID to mutually authenticate with the downstream Envoy and checks its authorized SPIFFE ID. The Agent and integration refresh identity material before expiry; neither a new HTTP request nor the certificate's TTL automatically triggers a fresh workload attestation. We monitor identity delivery, renewal and handshake failures in addition to SPIRE availability.
+
+**Evidence boundary:** Section 7 describes the **target production design**, not a completed SPIRE-backed mTLS verification in our Mission 007 lab; see Section 4 for actual results.
