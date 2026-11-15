@@ -234,3 +234,72 @@ A human opening Swagger UI is authenticated and authorized with corporate identi
 > Each FastAPI Deployment uses a dedicated Kubernetes ServiceAccount. Platform engineering runs SPIRE Server and node-local SPIRE Agents. Our Envoy sidecars subscribe to the SPIFFE workload identity material through the Agent integration. The Agent attests the calling workload and matches registered selectors; SPIRE issues short-lived X.509-SVIDs. Envoy uses the current SVID to mutually authenticate with the downstream Envoy and checks its authorized SPIFFE ID. The Agent and integration refresh identity material before expiry; neither a new HTTP request nor the certificate's TTL automatically triggers a fresh workload attestation. We monitor identity delivery, renewal and handshake failures in addition to SPIRE availability.
 
 **Evidence boundary:** Section 7 describes the **target production design**, not a completed SPIRE-backed mTLS verification in our Mission 007 lab; see Section 4 for actual results.
+
+## 8. Enterprise certificate rotation: Venafi + Vault + Amazon MSK versus SPIRE + Envoy
+
+> **Architecture comparison, not an assertion that our lab deployed Venafi or MSK.** Amazon MSK broker-side TLS certificates are AWS-managed; the Venafi example below concerns **Kafka client certificates** for producer/consumer workloads. For MSK mutual TLS authentication, verify the issuing chain is trusted through the configured AWS Private CA arrangement. Do not assume arbitrary Venafi-issued client certificates work automatically.
+
+### 8.1 Two certificate lifecycles, side by side
+
+```mermaid
+flowchart LR
+  subgraph A["A. Kafka client mTLS — enterprise PKI"]
+    V["Venafi / PKI"] -->|"Renew / issue"| W["Provisioning automation"]
+    W -->|"Publish versioned cert + key + chain"| VA["Vault"]
+    VA -->|"Agent template / secure fetch"| KP["Kafka producer or consumer Pod"]
+    KP -->|"TLS client reload or rolling restart"| KC["Kafka client TLS context"]
+    KC <-->|"mTLS, if configured"| MSK["Amazon MSK brokers"]
+  end
+  subgraph B["B. SPIFFE workload mTLS"]
+    SS["SPIRE Server"] --> SA["Node-local SPIRE Agent"]
+    SA -->|"Workload API / SDS stream"| EN["Envoy sidecar"]
+    EN <-->|"SPIFFE-ID authorized mTLS"| PE["Peer Envoy"]
+  end
+```
+
+| Question | Venafi + Vault + Kafka client | SPIRE + Envoy |
+|---|---|---|
+| Issuer/lifecycle | Venafi-managed PKI | SPIRE |
+| Distribution | Provisioning automation and Vault Agent/secret retrieval | SPIRE Agent with SPIFFE Workload API or SDS integration |
+| Material delivered | Leaf certificate, private key, CA/intermediate chain (often keystore/truststore) | X.509-SVID (certificate + private key) and trust bundle |
+| Live consumer | Kafka client TLS context | Envoy TLS context |
+| Reload | Client-specific hot reload/recreation or controlled rolling Pod restart | Envoy dynamic SDS secret update, no Pod restart normally |
+| Critical test | New broker TLS connection succeeds after loading renewed client identity | New peer mTLS handshake succeeds with refreshed SVID |
+| Failure mode | Vault updated but client still uses expired keystore | SPIRE renewed SVID but Envoy SDS delivery failed |
+
+### 8.2 Detailed Kafka client renewal sequence
+
+```mermaid
+sequenceDiagram
+  participant V as Venafi / CA
+  participant P as Provisioning pipeline
+  participant H as Vault
+  participant A as Vault Agent / secret-sync
+  participant K as Kafka producer or consumer
+  participant M as Amazon MSK
+  V-->>P: Renewed client certificate and chain
+  P->>P: Verify key match, SAN, chain, expiry and policy
+  P->>H: Write versioned certificate + private key securely
+  H-->>A: Updated secret available
+  A-->>K: Material updated in protected volume / client config
+  Note over K: Reload TLS client or rolling restart if needed
+  K->>M: Open NEW TLS connection with renewed credentials
+  M-->>K: TLS authentication result
+  K->>K: Verify Kafka produce/fetch and report rotation status
+```
+
+**Do not equate renewal, secret publication, delivery, loading and successful TLS authentication.** Each is a distinct observable checkpoint. Secret writes are not sufficient for in-memory Kafka clients. A mounted Kubernetes Secret can update on disk without an application reloading it. A Vault Agent can render a new file, but cannot force an arbitrary Kafka library to refresh its TLS context. For clients without supported hot reload, use rolling restarts with availability safeguards (consumer group rebalance impact, producer idempotence/retries, capacity, PodDisruptionBudget, maxUnavailable).
+
+**Security:** use workload identity/OIDC for Vault access, least-privilege tenant paths, avoid private keys in GitHub Actions logs/artifacts, keep old valid secret version only for controlled rollback, and protect audit logs. If Venafi manages the renewal and direct provisioning itself, the GitHub Actions step may not be needed.
+
+### 8.3 Operational interview checklist
+
+1. Which endpoint certificate? **MSK broker certificates are AWS-managed; client mTLS certs are the application's responsibility.**
+2. Does the client cert chain to an MSK-trusted CA, with AWS Private CA integration configured where required?
+3. Did Venafi issue a valid certificate with correct identity and matching key?
+4. Did the correct Vault tenant/path and version receive it?
+5. Did the running producer/consumer reload it? Confirm active cert serial/expiry, not just Vault version.
+6. Can a **new** TLS connection authenticate? Check SSL errors, auth failures, producer delivery and consumer lag.
+7. Is rotation safe across all replicas, AZs and environments? Monitor expiry, reload failures, rebalance and client availability.
+
+**Staff-level summary:** Venafi renews the enterprise Kafka client certificate, Vault can distribute it, and the Kafka client must load it. SPIRE renews workload SVIDs, while a correctly configured Envoy SDS integration dynamically receives and uses them. Both need end-to-end rotation verification.
